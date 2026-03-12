@@ -186,13 +186,7 @@ void Server::handleModeCommand(Client* client, const std::vector<std::string>& p
         return;
     }
 
-    if (!channel->isChannelOperator(client)) {
-        transmitToClient(client->getSocketFd(),
-            ":server 482 " + client->getNick() + " " + channelName + " :You're not channel operator");
-        return;
-    }
-
-    // Sans argument de mode, on affiche les modes actuellement actifs
+    // Sans argument de mode, tout membre peut consulter les modes actifs
     if (params.size() == 1) {
         std::string modes = "+";
         if (channel->isInviteOnlyMode()) modes += "i";
@@ -204,53 +198,89 @@ void Server::handleModeCommand(Client* client, const std::vector<std::string>& p
         return;
     }
 
+    if (!channel->isChannelOperator(client)) {
+        transmitToClient(client->getSocketFd(),
+            ":server 482 " + client->getNick() + " " + channelName + " :You're not channel operator");
+        return;
+    }
+
     std::string modeString = params[1];
     bool adding = true;
     size_t paramIndex = 2;
+    std::string appliedModes = "";
+    std::string appliedParams = "";
+    char currentSign = '+';
 
     for (size_t i = 0; i < modeString.length(); i++) {
         char mode = modeString[i];
-        if (mode == '+')
+        if (mode == '+') {
             adding = true;
-        else if (mode == '-')
+            currentSign = '+';
+        } else if (mode == '-') {
             adding = false;
-        else if (mode == 'i')
+            currentSign = '-';
+        } else if (mode == 'i') {
             channel->setInviteOnlyMode(adding);
-        else if (mode == 't')
+            appliedModes += currentSign;
+            appliedModes += 'i';
+        } else if (mode == 't') {
             channel->setTopicOpOnly(adding);
-        else if (mode == 'k') {
-            if (adding && paramIndex < params.size())
-                channel->setAccessKey(params[paramIndex++]);
-            else if (!adding)
-                channel->setAccessKey("");
-        }
-        else if (mode == 'l') {
+            appliedModes += currentSign;
+            appliedModes += 't';
+        } else if (mode == 'k') {
             if (adding && paramIndex < params.size()) {
-                int limit = atoi(params[paramIndex++].c_str());
-                if (limit > 0)
+                channel->setAccessKey(params[paramIndex]);
+                appliedModes += currentSign;
+                appliedModes += 'k';
+                appliedParams += " " + params[paramIndex++];
+            } else if (!adding) {
+                channel->setAccessKey("");
+                appliedModes += currentSign;
+                appliedModes += 'k';
+            }
+        } else if (mode == 'l') {
+            if (adding && paramIndex < params.size()) {
+                int limit = atoi(params[paramIndex].c_str());
+                if (limit > 0) {
                     channel->setMaxUsers(limit);
+                    appliedModes += currentSign;
+                    appliedModes += 'l';
+                    appliedParams += " " + params[paramIndex];
+                }
+                paramIndex++;
             } else if (!adding) {
                 channel->setMaxUsers(0);
+                appliedModes += currentSign;
+                appliedModes += 'l';
             }
-        }
-        else if (mode == 'o') {
+        } else if (mode == 'o') {
             if (paramIndex < params.size()) {
                 std::string targetNick = params[paramIndex++];
                 Client* targetClient = findClientByNick(targetNick);
-                if (targetClient && channel->isParticipant(targetClient)) {
+                if (!targetClient) {
+                    transmitToClient(client->getSocketFd(),
+                        ":server 401 " + client->getNick() + " " + targetNick + " :No such nick");
+                } else if (!channel->isParticipant(targetClient)) {
+                    transmitToClient(client->getSocketFd(),
+                        ":server 441 " + client->getNick() + " " + targetNick + " " + channelName + " :They aren't on that channel");
+                } else {
                     if (adding)
                         channel->promoteToOperator(targetClient);
                     else
                         channel->demoteFromOperator(targetClient);
+                    appliedModes += currentSign;
+                    appliedModes += 'o';
+                    appliedParams += " " + targetNick;
                 }
             }
         }
     }
 
-    // Notifie tous les membres du changement de mode
-    std::string modeMsg = ":" + client->buildPrefix() + " MODE " + channelName + " " + params[1];
-    for (size_t i = 2; i < params.size(); i++)
-        modeMsg += " " + params[i];
+    if (appliedModes.empty())
+        return;
+
+    // Notifie tous les membres uniquement des modes réellement appliqués
+    std::string modeMsg = ":" + client->buildPrefix() + " MODE " + channelName + " " + appliedModes + appliedParams;
 
     const std::set<Client*>& participants = channel->getParticipants();
     for (std::set<Client*>::const_iterator it = participants.begin();

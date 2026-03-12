@@ -117,6 +117,8 @@ void Server::start() {
             }
             if (_fds[idx].revents & POLLIN) {
                 onClientData(currentFd);
+                if (idx < _fds.size() && _fds[idx].fd != currentFd)
+                    idx--;
             } else if (_fds[idx].revents & (POLLHUP | POLLERR | POLLNVAL)) {
                 std::cout << "[INFO] Connexion terminée (fd:" << currentFd << ")" << std::endl;
                 disconnectClient(currentFd);
@@ -189,6 +191,7 @@ void Server::onClientData(int fd) {
 // Extrait les commandes complètes du buffer (délimitées par \n) et les traite
 // Gère à la fois les fins de ligne \r\n et \n seul
 void Server::extractAndProcessCommands(Client* client) {
+    int fd = client->getSocketFd();
     std::string& buffer = const_cast<std::string&>(client->getInputBuffer());
     size_t pos;
     while ((pos = buffer.find('\n')) != std::string::npos) {
@@ -198,8 +201,10 @@ void Server::extractAndProcessCommands(Client* client) {
             commandLine.erase(commandLine.length() - 1);
         if (commandLine.empty())
             continue;
-        std::cout << "[RECV fd:" << client->getSocketFd() << "] " << commandLine << std::endl;
+        std::cout << "[RECV fd:" << fd << "] " << commandLine << std::endl;
         processIrcCommand(client, commandLine);
+        if (!findClientByFd(fd))
+            return;
     }
 }
 
@@ -395,6 +400,8 @@ void Server::handlePassCommand(Client* client, const std::vector<std::string>& p
     }
     client->markPasswordVerified();
     std::cout << "[AUTH] Mot de passe vérifié pour fd:" << client->getSocketFd() << std::endl;
+    if (client->isFullyRegistered())
+        sendWelcomeMessages(client);
 }
 
 // NICK : valide le format, vérifie l'unicité et notifie les salons communs en cas de changement
